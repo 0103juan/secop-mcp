@@ -1,0 +1,12 @@
+[project]
+name = "secop-mcp"
+version = "0.1.0"
+description = "MCP server that lets an LLM query Colombia's public procurement data (SECOP II) safely"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic[mcp]>=1.11",
+    "mcp>=2.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
