@@ -136,3 +136,7 @@ entities.json   the entity directory find_entity searches: one entry per NIT wit
 chat.py         Claude as MCP host, answering in Spanish; prints the tool calls, tokens and seconds a session took
 test_server.py  query-builder, privacy and protocol tests, plus one live test
 ```
+
+## License
+
+[MIT](LICENSE) for the code. `entities.json` is derived from Colombia's open data on datos.gov.co and stays under that portal's terms.
