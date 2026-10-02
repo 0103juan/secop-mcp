@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 from anthropic import AsyncAnthropic
@@ -27,14 +28,21 @@ async def ask(question: str) -> None:
             tools=[async_mcp_tool(tool, mcp_client.session) for tool in tools],
             messages=[{"role": "user", "content": question}],
         )
+        started, calls, tokens_in, tokens_out = time.monotonic(), 0, 0, 0
         async for message in runner:
+            tokens_in += message.usage.input_tokens
+            tokens_out += message.usage.output_tokens
             if message.stop_reason == "refusal":
                 print("[el modelo rechazó la solicitud]")
             for block in message.content:
                 if block.type == "tool_use":
+                    calls += 1
                     print(f"  -> {block.name}({block.input})")
                 elif block.type == "text":
                     print(block.text)
+        # What the session cost, so a README can quote a measurement instead of an estimate.
+        print(f"\n[{calls} llamadas a herramientas, {tokens_in} tokens de entrada, {tokens_out} de salida, "
+              f"{time.monotonic() - started:.0f} s]")
 
 
 if __name__ == "__main__":

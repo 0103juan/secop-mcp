@@ -6,10 +6,12 @@ so the columns with personal data cannot be reached and nothing the model types 
 interpreted as query syntax.
 """
 
+import functools
 import json
 import math
 import os
 import re
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +25,9 @@ from pydantic import BaseModel
 
 DATASET = "https://www.datos.gov.co/resource/jbjy-vk9h.json"  # "SECOP II - Contratos Electrónicos"
 AUDIT_LOG = Path(os.environ.get("SECOP_AUDIT_LOG", Path(__file__).parent / "audit.jsonl"))
+# One entity per NIT with its other spellings, biggest first. A snapshot built by secop-api: finding an
+# entity by name upstream is a LIKE over six million rows, which is the query that times out.
+ENTITIES = Path(__file__).with_name("entities.json")
 MAX_ROWS = 100
 TIMEOUT_S = 60
 
@@ -59,16 +64,26 @@ COLUMNS = {
     "urlproceso": ("text", "URL del proceso en SECOP II, para verificar el contrato en la fuente"),
 }
 EXPRESSIONS = {"anio_firma": "date_extract_y(fecha_de_firma)"}
+MONEY = ("valor_del_contrato", "valor_pagado")
 NOTES = [
     "Solo cubre SECOP II. Los contratos publicados en SECOP I o en la Tienda Virtual del Estado no están aquí, "
     "así que los totales son un piso, no el total de la contratación pública.",
-    "Los nombres de entidades y proveedores varían. Para identificar uno, busca con 'contains' agrupando por "
-    "nombre y NIT/documento, y luego filtra por ese NIT/documento.",
+    "Para identificar una entidad usa find_entity: es inmediato y devuelve su NIT. No la busques con 'contains' "
+    "sobre nombre_entidad, que recorre millones de filas y suele agotar el tiempo. Filtra después por nit_entidad.",
+    "Un NIT puede cubrir varias dependencias (other_names en find_entity; por ejemplo, una alcaldía, su concejo "
+    "y su personería). Para una sola de ellas, filtra además por nombre_entidad exacto.",
+    "Los nombres de proveedores varían. Para identificar uno, acota primero por nit_entidad y año, busca con "
+    "'contains' agrupando por nombre y documento_proveedor, y luego filtra por ese documento.",
     "Para saber cuánto se contrató, excluye los estados Borrador y Cancelado.",
     "valor_del_contrato tiene errores de digitación de varios órdenes de magnitud. Siempre que pidas un sum, "
     "pide también max y count del mismo grupo, y avisa si un solo contrato explica casi todo el total.",
     "Hay contratos sin fecha de firma: en ellos anio_firma viene vacío.",
+    "Cada monto trae un campo gemelo terminado en _texto, ya escrito en palabras (por ejemplo '491.372 millones "
+    "de pesos'). Cita ese texto tal cual y no conviertas unidades: en español un billón es un millón de millones.",
 ]
+STOPWORDS = {"de", "del", "la", "las", "el", "los", "y", "e"}
+# How people name an entity versus how it is registered: "Alcaldía de Medellín" is a DISTRITO in the dataset.
+ENTITY_KINDS = {"alcaldia", "gobernacion", "municipio", "municipal", "departamento", "distrito", "distrital"}
 
 Column = Literal[*COLUMNS]
 
@@ -91,6 +106,7 @@ class Aggregate(BaseModel):
 mcp = MCPServer("secop", instructions=(
     "Contratación pública de Colombia: contratos electrónicos de SECOP II (datos.gov.co), más de seis "
     "millones de filas. Llama primero a describe_dataset: explica las columnas y las trampas de los datos. "
+    "Para ubicar una entidad por su nombre usa find_entity. "
     "Todo conteo o total debe venir de un agregado de query_contracts; nunca sumes filas por tu cuenta. "
     "Al dar una cifra, di qué filtros usaste. Los valores están en pesos colombianos."))
 
@@ -171,6 +187,17 @@ def _fetch(params: dict[str, str]) -> list[dict]:
         raise ToolError(f"datos.gov.co no respondió: {e}. Prueba una consulta más acotada")
 
 
+def pesos(value: float) -> str:
+    """An amount the way a Colombian reader writes it, so the model copies a unit instead of choosing one."""
+    def grouped(number: float) -> str:
+        return f"{number:,.0f}".replace(",", ".")
+    if abs(value) >= 1e12:  # a Spanish "billón" is a million millions
+        return f"{value / 1e12:.2f}".replace(".", ",") + " billones de pesos"
+    if abs(value) >= 1e7:
+        return grouped(value / 1e6) + " millones de pesos"
+    return grouped(value) + " pesos"
+
+
 def _typed(row: dict, numeric: set[str]) -> dict:
     """Socrata returns every value as a string; give numbers back as numbers and flatten URL objects."""
     out = {}
@@ -181,7 +208,20 @@ def _typed(row: dict, numeric: set[str]) -> dict:
             number = float(value)
             value = int(number) if number.is_integer() else number
         out[key] = value
+        if key in numeric and value is not None and not key.startswith("count") and any(key == c or key.endswith("_" + c) for c in MONEY):
+            out[key + "_texto"] = pesos(value)
     return out
+
+
+def _fold(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if not unicodedata.combining(c))
+
+
+@functools.cache
+def _directory() -> list[tuple[dict, list[str]]]:
+    """Every entity with its spellings folded for search: the name first, then the aliases."""
+    return [(entity, [_fold(spelling) for spelling in (entity["name"], *entity["aliases"])])
+            for entity in json.loads(ENTITIES.read_text(encoding="utf-8"))]
 
 
 def _audit(tool: str, **fields) -> None:
@@ -197,6 +237,45 @@ def describe_dataset() -> dict:
     return {"dataset": "SECOP II - Contratos Electrónicos (datos.gov.co, jbjy-vk9h)",
             "columns": [{"name": name, "type": kind, "description": text} for name, (kind, text) in COLUMNS.items()],
             "notes": NOTES}
+
+
+@mcp.tool()
+def find_entity(name: str, limit: int = 10) -> dict:
+    """Find a state entity by name and get its NIT. Immediate: it searches a local directory, not the dataset.
+
+    Case and accents are ignored, and every word must appear in one of the entity's names. Entities
+    are registered under their legal name: a city government ("Alcaldía de X") is often MUNICIPIO DE X
+    or DISTRITO ... DE X, and a "Gobernación" is often DEPARTAMENTO DE X. So when nothing has every
+    word, the search is repeated without the kind of entity and match says "place_only": check the
+    names before choosing. The directory is a snapshot; an entity that started publishing recently
+    may be missing.
+    """
+    words = [word for word in _fold(name).split() if word not in STOPWORDS]
+    if len("".join(words)) < 3:
+        _audit("find_entity", status="error", error="query too short")
+        raise ToolError("Escribe al menos tres letras del nombre de la entidad")
+
+    def search(wanted: list[str]) -> list[dict]:
+        by_name, by_alias = [], []
+        for entity, spellings in _directory():  # sorted by number of contracts, so each list is biggest first
+            spelling = next((i for i, text in enumerate(spellings) if all(word in text for word in wanted)), None)
+            if spelling is None:
+                continue
+            aliases = entity["aliases"]
+            found = {key: entity[key] for key in ("nit", "name", "department", "level", "contracts")} | {
+                "other_names": aliases[:5], "other_names_omitted": max(0, len(aliases) - 5)}
+            if spelling:
+                by_alias.append(found | {"matched_as": aliases[spelling - 1]})
+            else:
+                by_name.append(found)
+        return (by_name + by_alias)[:max(1, min(limit, 25))]
+
+    entities, match = search(words), "all_words"
+    place = [word for word in words if word not in ENTITY_KINDS]
+    if not entities and place and place != words:
+        entities, match = search(place), "place_only"
+    _audit("find_entity", status="ok", query=name, rows=len(entities))
+    return {"entities": entities, "match": match if entities else "none"}
 
 
 @mcp.tool()

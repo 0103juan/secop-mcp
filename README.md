@@ -11,7 +11,7 @@ An MCP server that lets an LLM answer questions about Colombian public procureme
         │                              │
         │                              └──▶ audit.jsonl
         ▼
-   describe_dataset → query_contracts (find the entity's NIT) → query_contracts (total per supplier)
+   describe_dataset → find_entity (local directory: the entity's NIT) → query_contracts (total per supplier)
 ```
 
 Anyone can install it: there is no database to set up and no key to request.
@@ -44,7 +44,7 @@ and the server builds the SoQL from it. Three things follow:
 `describe_dataset` returns the columns and, more importantly, the traps. These are the ones I hit while building it:
 
 - **Typos of several orders of magnitude.** The largest contract signed since 2024 is recorded as 6.4 × 10¹⁵ pesos, more than the entire national budget. One such row ruins any `SUM`. The server tells the model to request `max` and `count` alongside every `sum` and to say so when one contract explains the total.
-- **Names are not identifiers.** A search for "Medellín" returns the sports institute, the district, a library and a hospital. The model is told to resolve a name to a NIT first and filter by NIT afterwards.
+- **Names are not identifiers.** A search for "Medellín" returns the sports institute, the district, a library and a hospital, and the city government is not registered as "Alcaldía" at all. `find_entity` resolves a name to a NIT from a local directory of the 5,800 entities, and the model filters by NIT afterwards.
 - **Drafts and cancellations are in the data.** "How much was contracted" has to exclude them.
 - **SECOP II is not all of public procurement.** SECOP I and the state's online store are separate datasets, so every total is a floor.
 
@@ -77,13 +77,22 @@ The five suppliers and amounts in the answer are the ones in the table above, an
 Two things went wrong, and both are worth more than the success:
 
 - **One unit slip in the prose.** The table says "491.372 mil millones", which is right. A sentence below it calls the same contract "unos 491 billones de pesos", which in Spanish is a thousand times more. The tool returned the right number; the model mislabelled it once while writing. Amounts should be formatted by code, not by the model.
-- **Finding the entity cost a timeout and two extra calls.** Name search is the slow path on this dataset. [secop-api](https://github.com/0103juan/secop-api) solves it with a directory of entities held in memory; this server does not have one yet.
+- **Finding the entity cost a timeout and two extra calls.** Name search is the slow path on this dataset: a substring match over a year of contracts.
+
+## What that session changed
+
+Both problems were fixed in the tool, not in the prompt.
+
+- **`find_entity`, a third tool.** The server now ships the entity directory that [secop-api](https://github.com/0103juan/secop-api) builds: one entry per NIT with its other spellings. The search runs in memory, ignores case and accents, and never touches the dataset. "Alcaldía de Medellín" matches nothing word for word, because the dataset calls it a district; the tool then searches by the place alone, says so (`"match": "place_only"`) and returns the district with the council and the ombudsman listed under the same NIT. `describe_dataset` now tells the model not to look for entities with `contains`.
+- **Amounts are written out by code.** Every money value in a result comes with a twin field, `sum_valor_del_contrato_texto: "491.372 millones de pesos"`, and the model is told to quote it as it is. The rule that a Spanish *billón* is a million millions lives in one tested function instead of in the model's arithmetic.
+
+The session above is the one before these changes. I have not run the model against the new tools yet, so what they do to the number of calls and to the answer is still to be measured; the tests below check the tools themselves.
 
 ## Run it
 
 ```bash
 uv sync
-uv run pytest        # 17 tests; 16 run offline, 1 calls datos.gov.co and is skipped without network
+uv run pytest        # 24 tests; 23 run offline, 1 calls datos.gov.co and is skipped without network
 ```
 
 Connect it to a client:
@@ -106,6 +115,8 @@ An optional `SOCRATA_APP_TOKEN` environment variable raises the anonymous rate l
 - Hostile values stay inside string literals; ill-typed values (a non-number for a NIT, `inf`, a malformed date) are rejected.
 - Personal-data columns and made-up column names cannot be selected, filtered or sorted on, both when calling the function directly and through the MCP protocol, where the schema rejects them before any request is made.
 - The row limit is capped at 100, rows come back with real numbers instead of strings, and every call is written to the audit log.
+- An entity is found by name without any request to the dataset, whatever the accents, and a name people use ("Alcaldía de Medellín") falls back to the place.
+- Amounts are written out as a Colombian reader expects, 10¹² is a *billón*, and a count is never formatted as money.
 - Against the live API, the generated SoQL is accepted and returns the expected shape.
 
 ## Limits, stated plainly
@@ -114,12 +125,14 @@ An optional `SOCRATA_APP_TOKEN` environment variable raises the anonymous rate l
 - Text search is a case-insensitive substring match. It does not fold accents, and the source is inconsistent about them.
 - The server reports the data; it cannot repair it. Outliers, duplicates and late updates in SECOP II flow straight through.
 - Response time depends on datos.gov.co: usually under a second for filtered queries, 10 seconds or more for scans over all six million rows, and occasionally a timeout.
-- `chat.py` has been run against the live model once, on one question (above). That is an example, not an evaluation: there is no golden set of questions for this server.
+- The entity directory is a snapshot (`entities.json`, copied from secop-api). An entity that started publishing after it was built is not found by name until the file is refreshed.
+- `chat.py` has been run against the live model on one question (above), before `find_entity` and the formatted amounts existed. That is an example, not an evaluation: there is no golden set of questions for this server.
 
 ## Layout
 
 ```
-server.py       the MCP server: the column allowlist, the query builder, two tools, the audit log
-chat.py         Claude as MCP host, answering in Spanish
+server.py       the MCP server: the column allowlist, the query builder, three tools, the audit log
+entities.json   the entity directory find_entity searches: one entry per NIT with its other spellings
+chat.py         Claude as MCP host, answering in Spanish; prints the tool calls, tokens and seconds a session took
 test_server.py  query-builder, privacy and protocol tests, plus one live test
 ```

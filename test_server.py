@@ -87,7 +87,8 @@ def test_rows_come_back_typed_and_every_call_is_audited(fake_api):
     result = server.query_contracts(
         columns=["proveedor_adjudicado", "urlproceso"],
         aggregates=[Aggregate(function="sum", column="valor_del_contrato"), Aggregate(function="count")])
-    assert result["rows"] == [{"proveedor_adjudicado": "ACME", "sum_valor_del_contrato": 1500000.5, "count": 3,
+    assert result["rows"] == [{"proveedor_adjudicado": "ACME", "sum_valor_del_contrato": 1500000.5,
+                               "sum_valor_del_contrato_texto": "1.500.000 pesos", "count": 3,
                                "urlproceso": "https://example.test/x"}]
     with pytest.raises(ToolError):
         server.query_contracts(columns=["n_mero_de_cuenta"])
@@ -106,11 +107,47 @@ def test_over_the_mcp_protocol_the_schema_rejects_personal_columns(fake_api):
             return tools, ok, denied
 
     tools, ok, denied = asyncio.run(scenario())
-    assert set(tools) == {"describe_dataset", "query_contracts"}
+    assert set(tools) == {"describe_dataset", "find_entity", "query_contracts"}
     assert not ok.is_error and fake_api[0]["$where"] == "upper(departamento) like '%ANTIOQUIA%'"
     assert denied.is_error and len(fake_api) == 1  # rejected before any request was made
     schema = json.dumps(tools["query_contracts"].input_schema)
     assert "nit_entidad" in schema and not any(column in schema for column in PERSONAL)
+
+
+@pytest.mark.parametrize("value, text", [
+    (491_372_098_658, "491.372 millones de pesos"),   # the amount the model once called "491 billones"
+    (4_310_000_000_000, "4,31 billones de pesos"),    # a Spanish billón is 10^12
+    (45_000_000_000, "45.000 millones de pesos"),
+    (9_999_999, "9.999.999 pesos"),
+])
+def test_amounts_are_written_out_by_code(value, text):
+    assert server.pesos(value) == text
+
+
+def test_counts_are_not_mistaken_for_money():
+    row = server._typed({"count_valor_del_contrato": "12", "max_valor_del_contrato": "20000000"},
+                        {"count_valor_del_contrato", "max_valor_del_contrato"})
+    assert row == {"count_valor_del_contrato": 12, "max_valor_del_contrato": 20000000,
+                   "max_valor_del_contrato_texto": "20 millones de pesos"}
+
+
+def test_an_entity_is_found_by_name_without_touching_the_dataset(fake_api):
+    found = server.find_entity("medellín")  # accents and case do not matter
+    district = next(e for e in found["entities"] if e["nit"] == 890905211)
+    assert found["match"] == "all_words" and fake_api == []
+    assert "CONCEJO MUNICIPAL DE MEDELLIN" in district["other_names"]  # one NIT, several bodies
+
+    exact = server.find_entity("Alcaldía de Popayán")
+    assert exact["match"] == "all_words" and exact["entities"][0]["nit"] == 891580006
+
+
+def test_a_name_people_use_falls_back_to_the_place():
+    # SECOP II registers Medellín's city government as a DISTRITO, so no entity has the word "alcaldía".
+    found = server.find_entity("Alcaldía de Medellín")
+    assert found["match"] == "place_only" and 890905211 in [e["nit"] for e in found["entities"]]
+    assert server.find_entity("xyzzy") == {"entities": [], "match": "none"}
+    with pytest.raises(ToolError):
+        server.find_entity("de la")
 
 
 def _online() -> bool:
