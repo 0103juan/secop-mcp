@@ -60,6 +60,25 @@ Top suppliers of the Distrito de Medellín (NIT 890905211) for contracts signed 
 
 The first row is why `max` and `count` travel with `sum`: the top "supplier" is a single contract, which a careful answer should point out rather than rank next to 63 separate ones. The dataset changes daily, so these figures will drift.
 
+## The same question, asked through the model
+
+`uv run python chat.py` with its default question, "¿Cuáles fueron los cinco mayores contratistas de la Alcaldía de Medellín en 2024?", run on 1 October 2026 with `claude-sonnet-5-5`. Five tool calls in about two minutes, from the audit log:
+
+| Call | Result |
+|---|---|
+| `describe_dataset` | columns and traps |
+| name contains "medell", year 2024, grouped by entity | **timeout** after 60 s: a substring match over a year of contracts |
+| name contains "alcaldía de medell", year 2024 | 0 rows: SECOP II does not call it "Alcaldía" |
+| name and city contain "medell", year 2024 | 15 entities, which is how it found the official name |
+| exact entity name, year 2024, drafts and cancellations excluded, `sum` + `max` + `count` by supplier, top 5 | 5 rows |
+
+The five suppliers and amounts in the answer are the ones in the table above, and it did what the server asks for: it listed the filters it used, said the first place is a single contract that should be checked at the source, said that most of the list is contracts between public bodies, and said SECOP II totals are a floor. It also noticed that the Concejo and the Personería share the district's NIT and filtered by the exact entity name instead, which the NIT-first advice in `describe_dataset` does not anticipate.
+
+Two things went wrong, and both are worth more than the success:
+
+- **One unit slip in the prose.** The table says "491.372 mil millones", which is right. A sentence below it calls the same contract "unos 491 billones de pesos", which in Spanish is a thousand times more. The tool returned the right number; the model mislabelled it once while writing. Amounts should be formatted by code, not by the model.
+- **Finding the entity cost a timeout and two extra calls.** Name search is the slow path on this dataset. [secop-api](https://github.com/0103juan/secop-api) solves it with a directory of entities held in memory; this server does not have one yet.
+
 ## Run it
 
 ```bash
@@ -95,7 +114,7 @@ An optional `SOCRATA_APP_TOKEN` environment variable raises the anonymous rate l
 - Text search is a case-insensitive substring match. It does not fold accents, and the source is inconsistent about them.
 - The server reports the data; it cannot repair it. Outliers, duplicates and late updates in SECOP II flow straight through.
 - Response time depends on datos.gov.co: usually under a second for filtered queries, 10 seconds or more for scans over all six million rows, and occasionally a timeout.
-- `chat.py` has not been run against the live model yet. The server has: over stdio, against the real API.
+- `chat.py` has been run against the live model once, on one question (above). That is an example, not an evaluation: there is no golden set of questions for this server.
 
 ## Layout
 
