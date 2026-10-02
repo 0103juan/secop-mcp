@@ -38,5 +38,6 @@ async def ask(question: str) -> None:
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")  # piped output on Windows defaults to cp1252, which has no "≈"
     asyncio.run(ask(" ".join(sys.argv[1:]) or
                     "¿Cuáles fueron los cinco mayores contratistas de la Alcaldía de Medellín en 2024?"))
