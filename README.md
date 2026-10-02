@@ -1,5 +1,7 @@
 # secop-mcp
 
+[![CI](https://github.com/0103juan/secop-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0103juan/secop-mcp/actions/workflows/ci.yml)
+
 An MCP server that lets an LLM answer questions about Colombian public procurement from the official open data: the **SECOP II electronic contracts** dataset on [datos.gov.co](https://www.datos.gov.co/Gastos-Gubernamentales/SECOP-II-Contratos-Electr-nicos/jbjy-vk9h), more than six million contracts, updated daily.
 
 ```
