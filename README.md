@@ -107,6 +107,8 @@ Or ask through the included host (needs `ANTHROPIC_API_KEY`):
 uv run python chat.py "¿Cuánto contrató la Gobernación de Antioquia por licitación pública en 2023?"
 ```
 
+`chat.py` calls the model through [model-gateway](https://github.com/0103juan/model-gateway): every turn of the SDK's tool runner is recorded in `.gateway/ledger.jsonl`, and the cost it prints at the end is the sum of those records. That path has run against a fake model only, not yet against the API.
+
 An optional `SOCRATA_APP_TOKEN` environment variable raises the anonymous rate limit.
 
 ## What the tests prove
@@ -133,7 +135,7 @@ An optional `SOCRATA_APP_TOKEN` environment variable raises the anonymous rate l
 ```
 server.py       the MCP server: the column allowlist, the query builder, three tools, the audit log
 entities.json   the entity directory find_entity searches: one entry per NIT with its other spellings
-chat.py         Claude as MCP host, answering in Spanish; prints the tool calls, tokens and seconds a session took
+chat.py         Claude as MCP host, answering in Spanish; prints the tool calls, tokens, cost and seconds a session took
 test_server.py  query-builder, privacy and protocol tests, plus one live test
 ```
 
