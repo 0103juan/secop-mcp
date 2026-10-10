@@ -500,6 +500,15 @@ wheels = [
 ]
 
 [[package]]
+name = "model-gateway"
+version = "0.1.0"
+source = { git = "https://github.com/0103juan/model-gateway?rev=e0e3c74dcdfa01278af2a5188a4af8f81274819d#e0e3c74dcdfa01278af2a5188a4af8f81274819d" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "pydantic" },
+]
+
+[[package]]
 name = "opentelemetry-api"
 version = "1.45.0"
 source = { registry = "https://pypi.org/simple" }
@@ -869,6 +878,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "anthropic", extra = ["mcp"] },
     { name = "mcp" },
+    { name = "model-gateway" },
 ]
 
 [package.dev-dependencies]
@@ -880,6 +890,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", extras = ["mcp"], specifier = ">=1.11" },
     { name = "mcp", specifier = ">=2.2" },
+    { name = "model-gateway", git = "https://github.com/0103juan/model-gateway?rev=e0e3c74dcdfa01278af2a5188a4af8f81274819d" },
 ]
 
 [package.metadata.requires-dev]

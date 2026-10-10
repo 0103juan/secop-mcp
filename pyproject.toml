@@ -6,7 +6,11 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic[mcp]>=1.11",
     "mcp>=2.2",
+    "model-gateway",
 ]
+
+[tool.uv.sources]
+model-gateway = { git = "https://github.com/0103juan/model-gateway", rev = "e0e3c74dcdfa01278af2a5188a4af8f81274819d" }
 
 [dependency-groups]
 dev = ["pytest>=8"]
